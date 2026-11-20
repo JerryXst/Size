@@ -29,7 +29,7 @@ macOS 窗口管理工具，复刻 [SizeUp](https://sizeup.macupdate.com/) 的体
 ## 构建与安装
 
 ```sh
-cd /Users/jerryxst/Code/Github/Size
+git clone <this repo> && cd Size
 bash Scripts/build-app.sh          # 产出 build/Size.app
 open build/Size.app                # 启动（菜单栏出现图标，无 Dock 图标）
 ```
@@ -74,6 +74,21 @@ bash Scripts/build-app.sh                 # 之后自动用它签名
 > 不会让你踩到「恶意软件」弹窗。
 
 `spctl` 对自签名 App 显示 `rejected` 是**正常的**（没有公证），不影响本地运行。
+
+---
+
+## 图标
+
+图标源图存在 `Resources/icon-source.png`，`Resources/Size.icns` 是产物。
+需要重新生成时：
+
+```sh
+bash Scripts/make-icon.sh Resources/icon-source.png
+```
+
+`make-icon.swift` 会做两件模型原图通常做不好的事：把不透明背景抠成真正的
+透明（否则 Dock 里会露出黑方块），以及把图形放到 Apple 的图标网格上
+（主体占画布约 80%，否则看起来比其他 App 大一圈）。
 
 ---
 
