@@ -53,7 +53,7 @@ public final class AXWindowMover {
         let cgTarget = ScreenGeometry.cgRect(fromNS: target, mainScreenFrame: mainScreenFrame)
         let startingFrame = window.frame(mainScreenFrame: mainScreenFrame)
 
-        for attempt in 0..<3 {
+        for attempt in 0..<4 {
             // Alternate the order: a minority of apps only honour the geometry
             // when the size is set before the position.
             if attempt % 2 == 0 {
@@ -64,6 +64,21 @@ public final class AXWindowMover {
                 _ = window.setPosition(cgTarget.origin)
             }
 
+            // Setting a frame is asynchronous. Reading back immediately returns a
+            // half-applied state: moving a window between displays of different
+            // sizes makes the app re-run its own constraint pass, so a read taken
+            // too early shows the *new* origin with the *old* size. That false
+            // negative used to burn every retry, leaving the window badly sized.
+            //
+            // Fast path first: within one display most apps apply the frame
+            // synchronously, and waiting there would add latency to every press.
+            if let immediate = window.frame(mainScreenFrame: mainScreenFrame),
+               approximatelyEqual(immediate, target) {
+                return .exact
+            }
+
+            settle()
+
             guard let actual = window.frame(mainScreenFrame: mainScreenFrame) else {
                 continue
             }
@@ -71,7 +86,8 @@ public final class AXWindowMover {
                 return .exact
             }
             if let startingFrame, approximatelyEqual(actual, startingFrame) {
-                // Nothing moved at all; retrying the same way will not help.
+                // Nothing moved at all; give the app a moment and retry.
+                settle(longer: true)
                 continue
             }
         }
@@ -88,6 +104,17 @@ public final class AXWindowMover {
             return .failed("The app refused the frame change")
         }
         return .adjusted(final)
+    }
+
+    /// Lets the target app finish applying a geometry change.
+    ///
+    /// 80ms is enough on Apple silicon for both native and Electron apps to pass
+    /// the new frame through their constraint logic. Spinning the run loop (as
+    /// opposed to sleeping) means an app that answers on our own queue still
+    /// gets serviced.
+    private func settle(longer: Bool = false) {
+        let delay: TimeInterval = longer ? 0.14 : 0.08
+        RunLoop.current.run(until: Date().addingTimeInterval(delay))
     }
 
     /// Leaves native full screen and waits for the transition to finish.

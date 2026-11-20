@@ -162,6 +162,10 @@ size-cli action fullScreen --pid 123   # 指定目标
 - 判断「算满屏」有 8pt 容差，因为不同屏幕的菜单栏高度不同，
   所谓满屏窗口常常差几个点没贴边
 
+连续按 Previous/Next Display 会严格在两个 frame 之间循环，不会漂移；
+Left Half 跨屏后仍是精确的一半。这两点有专门的单元测试
+（`RepeatedDisplayMoveTests`）。
+
 ---
 
 ## 已知限制
@@ -188,3 +192,8 @@ size-cli action fullScreen --pid 123   # 指定目标
    启动时有单实例守卫，但仍要确认只有一个在跑。
 6. **不要用 `--options runtime`**（硬化运行时）配本地证书 —— launchd 会拒绝启动
    （`RBSRequestErrorDomain Code=5`, POSIX 163）。
+7. **`AXUIElementSetAttributeValue` 是异步的** —— 设完立刻回读会拿到
+   「新原点 + 旧尺寸」的半应用状态。跨屏时 App 还要重跑自己的约束，
+   这个假失败会把重试次数耗光，窗口就停在错误的尺寸上。
+   正解：设完先**快速回读一次**（同屏内多数 App 是同步生效的，不白等），
+   不匹配再等 ~80ms 重试。见 `AXWindowMover.settle()`。

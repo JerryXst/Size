@@ -756,3 +756,128 @@ final class SnapshotStoreTests: XCTestCase {
         XCTAssertNil(store.recall(key: "w1"))
     }
 }
+
+// MARK: - Repeated moves between displays of different resolutions
+//
+// Regression cover for two reported bugs:
+//   1. pressing Previous/Next Display several times leaves the window in a
+//      confused position or size;
+//   2. pressing Next Display right after Left Half gives the wrong size.
+//
+// Both were caused by the mover reading the window frame back before the app had
+// finished applying it, so each step started from a half-applied frame and the
+// error compounded. These tests pin down the geometry side: given a correct
+// starting frame, each move must be exact and repeatable.
+
+final class RepeatedDisplayMoveTests: XCTestCase {
+    /// The two displays this machine actually has, so the numbers match reality.
+    /// Display 0 sits to the left and is shorter; display 1 is the built-in main.
+    private var leftDisplay: ScreenInfo {
+        ScreenInfo(
+            frame: CGRect(x: -1710, y: 81, width: 1710, height: 1107),
+            visibleFrame: CGRect(x: -1710, y: 81, width: 1710, height: 1074),
+            index: 0
+        )
+    }
+
+    private var mainDisplay: ScreenInfo {
+        ScreenInfo(
+            frame: CGRect(x: 0, y: 0, width: 2304, height: 1296),
+            visibleFrame: CGRect(x: 0, y: 0, width: 2304, height: 1266),
+            index: 1
+        )
+    }
+
+    private var displays: [ScreenInfo] { [leftDisplay, mainDisplay] }
+
+    /// Walks a sequence of actions, feeding each result back in as the new frame —
+    /// the same loop the app runs, one hotkey press at a time.
+    private func applying(
+        _ actions: [WindowAction],
+        startingFrom frame: CGRect
+    ) -> [CGRect] {
+        var current = frame
+        var trail: [CGRect] = []
+        for action in actions {
+            let resolution = ActionResolver.resolve(action, input: ResolveInput(
+                windowFrame: current,
+                screens: displays
+            ))
+            guard case .frame(let next) = resolution else {
+                XCTFail("\(action.rawValue) was not applicable from \(current)")
+                return trail
+            }
+            current = next
+            trail.append(next)
+        }
+        return trail
+    }
+
+    private func leftHalf() -> CGRect {
+        CGRect(x: leftDisplay.visibleFrame.minX, y: leftDisplay.visibleFrame.minY,
+               width: 855, height: leftDisplay.visibleFrame.height)
+    }
+
+    func testRepeatedNextDisplayCyclesWithoutDrift() {
+        let trail = applying(Array(repeating: .nextMonitor, count: 6), startingFrom: leftHalf())
+        XCTAssertEqual(trail.count, 6)
+        // Odd and even steps must land on the same two frames, with no creep.
+        XCTAssertEqual(trail[0], trail[2])
+        XCTAssertEqual(trail[2], trail[4])
+        XCTAssertEqual(trail[1], trail[3])
+        XCTAssertEqual(trail[3], trail[5])
+        XCTAssertEqual(trail[0].width, 1152)
+        XCTAssertEqual(trail[1].width, 855)
+    }
+
+    func testRepeatedPrevDisplayCyclesWithoutDrift() {
+        let start = CGRect(x: mainDisplay.visibleFrame.minX, y: mainDisplay.visibleFrame.minY,
+                           width: 1152, height: mainDisplay.visibleFrame.height)
+        let trail = applying(Array(repeating: .prevMonitor, count: 6), startingFrom: start)
+        XCTAssertEqual(trail[0], trail[2])
+        XCTAssertEqual(trail[1], trail[3])
+        XCTAssertEqual(trail[2], trail[4])
+        XCTAssertEqual(trail[1], start)
+    }
+
+    /// The specific complaint: Left Half, then switch display — the window must be
+    /// a half screen on the destination, not some middle size.
+    func testLeftHalfThenNextDisplayGivesExactHalf() {
+        let trail = applying([.nextMonitor], startingFrom: leftHalf())
+        XCTAssertEqual(trail[0], CGRect(x: 0, y: 0, width: 1152, height: 1266))
+    }
+
+    func testHalfScreenSurvivesRoundTrip() {
+        let start = leftHalf()
+        let trail = applying([.nextMonitor, .prevMonitor], startingFrom: start)
+        XCTAssertEqual(trail[1], start)
+    }
+
+    /// A maximised window stays maximised across resolutions.
+    func testFullScreenRoundTripKeepsFullScreen() {
+        let start = leftDisplay.visibleFrame
+        let trail = applying([.nextMonitor, .prevMonitor], startingFrom: start)
+        XCTAssertEqual(trail[0], mainDisplay.visibleFrame)
+        XCTAssertEqual(trail[1], start)
+    }
+
+    func testThirdScreenStaysThird() {
+        let start = CGRect(x: leftDisplay.visibleFrame.minX, y: leftDisplay.visibleFrame.minY,
+                           width: 570, height: leftDisplay.visibleFrame.height)
+        let trail = applying([.nextMonitor, .prevMonitor], startingFrom: start)
+        XCTAssertEqual(trail[0].width, 768)
+        XCTAssertEqual(trail[0].minX, mainDisplay.visibleFrame.minX)
+        XCTAssertEqual(trail[1], start)
+    }
+
+    /// Whatever happens, the window must remain findable on one of the displays.
+    func testWindowNeverEndsUpNowhere() {
+        let trail = applying(Array(repeating: .nextMonitor, count: 5), startingFrom: leftHalf())
+        for frame in trail {
+            XCTAssertNotNil(
+                ScreenGeometry.screenIndex(containing: frame, screens: displays),
+                "window ended up on no display: \(frame)"
+            )
+        }
+    }
+}
