@@ -1,0 +1,24 @@
+# SwiftPM build products (several hundred MB, contains absolute paths)
+.build/
+.build-check/
+Package.resolved
+
+# App bundle and verification logs produced by Scripts/build-app.sh / verify.sh
+build/
+build/verify/
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+
+# Local editor / tooling
+.vscode/
+.idea/
+*.swp
