@@ -137,7 +137,12 @@ fi
 step "5/5  Cleanup"
 # A previous uitest run toggled "launch at login" and left a LaunchAgent behind,
 # which made launchd respawn the app and produce duplicate instances.
-if launchctl list 2>/dev/null | grep -q "com.jerryxst.size"; then
+# `launchctl list` prints "PID\tStatus\tLabel"; while Size.app is running
+# its *launchd job* shows up as application.com.jerryxst.size.<gen>, which
+# a plain substring grep matched and reported as stale. Match the exact
+# label instead — steps 3/4 need the app running, so the old check could
+# never pass at the same time.
+if launchctl list 2>/dev/null | grep -qE '[[:space:]]com\.jerryxst\.size$'; then
     fail "stale LaunchAgent com.jerryxst.size — run: launchctl bootout gui/$(id -u)/com.jerryxst.size"
 else
     pass "no stale LaunchAgent"

@@ -22,20 +22,56 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Pin the system build (LibreSSL 3.3.6). Homebrew's OpenSSL 3.x writes the
+# PKCS#12 with PBES2/AES-256-CBC; SecKeychainItemImport cannot read that and
+# fails with "MAC verification failed during PKCS12 import (wrong password?)",
+# so the certificate never gets installed and builds silently stay ad-hoc
+# signed (Accessibility grant resets on every rebuild).
+#
+# Do NOT "fix" that with -certpbe/-keypbe/-macalg DES-CBC: OpenSSL 3.x has no
+# legacy provider by default, rejects those ciphers and emits no .p12 at all,
+# which is worse — the import then fails with "Unknown format in import".
+OPENSSL=/usr/bin/openssl
+if [ ! -x "$OPENSSL" ]; then
+    echo "No /usr/bin/openssl; falling back to whatever is on PATH." >&2
+    OPENSSL=openssl
+fi
+
 echo "Generating certificate \"$IDENTITY_NAME\"…"
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+"$OPENSSL" req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -keyout "$WORK/key.pem" -out "$WORK/cert.pem" \
     -subj "/CN=$IDENTITY_NAME" \
     -addext "basicConstraints=critical,CA:false" \
     -addext "keyUsage=critical,digitalSignature" \
-    -addext "extendedKeyUsage=critical,codeSigning" 2>/dev/null
+    -addext "extendedKeyUsage=critical,codeSigning" >/dev/null
 
-openssl pkcs12 -export \
+# Force the legacy PKCS#12 algorithms. Without these the key/bag ciphers
+# default to AES-256-CBC (PBES2), which SecKeychainItemImport cannot read;
+# it then fails with "MAC verification failed during PKCS12 import
+# (wrong password?)" — the password is fine, the cipher is not.
+"$OPENSSL" pkcs12 -export \
     -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-    -out "$WORK/identity.p12" -passout pass:size -name "$IDENTITY_NAME" 2>/dev/null
+    -out "$WORK/identity.p12" -passout pass:size -name "$IDENTITY_NAME" \
+    -certpbe DES-CBC -keypbe DES-CBC -macalg sha1 >/dev/null
 
 echo "Importing into the login keychain…"
-security import "$WORK/identity.p12" -k "$KEYCHAIN" -P size -T /usr/bin/codesign
+# Delete stale copies first: two certificates with the same name make
+# `codesign --sign "Size Dev"` fail with "ambiguous (matches ... and ...)",
+# which is how a half-installed identity hides itself.
+while security find-certificate -c "$IDENTITY_NAME" >/dev/null 2>&1; do
+    hash="$(security find-certificate -a -c "$IDENTITY_NAME" -Z 2>/dev/null \
+        | awk '/SHA-256:/{print $NF; exit}')"
+    [ -n "$hash" ] || break
+    security delete-certificate -Z "$hash" "$KEYCHAIN" >/dev/null 2>&1 || break
+done
+
+# Fail loudly here: a swallowed error here previously left the app ad-hoc
+# signed while the script still printed "Done".
+if ! security import "$WORK/identity.p12" -k "$KEYCHAIN" -P size -T /usr/bin/codesign; then
+    echo "Import failed — the .p12 was not created or cannot be read." >&2
+    echo "Check the openssl version: /usr/bin/openssl version -a" >&2
+    exit 1
+fi
 
 echo "Trusting the certificate for code signing…"
 # -d would require sudo; a user-level trust setting is enough for codesign.
@@ -46,5 +82,9 @@ security add-trusted-cert -r trustRoot -k "$KEYCHAIN" "$WORK/cert.pem" || {
 }
 
 echo
-security find-identity -v -p codesigning | grep "$IDENTITY_NAME" || true
+security find-identity -v -p codesigning | grep "$IDENTITY_NAME" || {
+    echo "Warning: import said OK but codesign still cannot see the identity." >&2
+    echo "Reboot, or import $WORK/identity.p12 by double-clicking it," >&2
+    echo "then set Trust to Always Trust, and re-run: bash Scripts/verify.sh" >&2
+}
 echo "Done. Future builds will be signed with this identity."
